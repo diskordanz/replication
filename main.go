@@ -67,5 +67,7 @@ func main() {
 	}
 
 	// If needed, one can access the master or a slave explicitly.
-	master, slave := db.Master(), db.Slave()
+	//master, slave := db.Master(), db.Slave()
+	_, _ = db.Master(), db.Slave()
+
 }
