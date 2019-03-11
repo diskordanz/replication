@@ -2,10 +2,8 @@ package rep
 
 import (
 	"database/sql"
-	"database/sql/driver"
 	"strings"
 	"sync/atomic"
-	"time"
 )
 
 type DB struct {
@@ -32,14 +30,6 @@ func (db *DB) Close() error {
 	})
 }
 
-func (db *DB) Driver() driver.Driver {
-	return db.pdbs[0].Driver()
-}
-
-func (db *DB) Begin() (*sql.Tx, error) {
-	return db.pdbs[0].Begin()
-}
-
 func (db *DB) Exec(query string, args ...interface{}) error {
 	scatter(len(db.pdbs), func(i int) error {
 		db.pdbs[i].Exec(query, args...)
@@ -61,41 +51,13 @@ func (db *DB) Ping() error {
 		return db.pdbs[i].Ping()
 	})
 }
-func (db *DB) Prepare(query string) (Stmt, error) {
-	stmts := make([]*sql.Stmt, len(db.pdbs))
-
-	err := scatter(len(db.pdbs), func(i int) (err error) {
-		stmts[i], err = db.pdbs[i].Prepare(query)
-		return err
-	})
-
-	if err != nil {
-		return nil, err
-	}
-
-	return &stmt{db: db, stmts: stmts}, nil
-}
 func (db *DB) Query(query string, args ...interface{}) (*sql.Rows, error) {
 	return db.pdbs[db.slave(len(db.pdbs))].Query(query, args...)
 }
 func (db *DB) QueryRow(query string, args ...interface{}) *sql.Row {
 	return db.pdbs[db.slave(len(db.pdbs))].QueryRow(query, args...)
 }
-func (db *DB) SetMaxIdleConns(n int) {
-	for i := range db.pdbs {
-		db.pdbs[i].SetMaxIdleConns(n)
-	}
-}
-func (db *DB) SetMaxOpenConns(n int) {
-	for i := range db.pdbs {
-		db.pdbs[i].SetMaxOpenConns(n)
-	}
-}
-func (db *DB) SetConnMaxLifetime(d time.Duration) {
-	for i := range db.pdbs {
-		db.pdbs[i].SetConnMaxLifetime(d)
-	}
-}
+
 func (db *DB) Slave() *sql.DB {
 	return db.pdbs[db.slave(len(db.pdbs))]
 }

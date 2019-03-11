@@ -5,9 +5,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"strconv"
-
-	"database/sql"
 
 	rep "github.com/diskordanz/replication/rep"
 	_ "github.com/go-sql-driver/mysql"
@@ -15,6 +12,7 @@ import (
 )
 
 type Car struct {
+	ID             int
 	Number         string
 	Model          string
 	Year           string
@@ -23,7 +21,7 @@ type Car struct {
 	Color          string
 }
 
-var db *sql.DB
+var db *rep.DB
 
 func main() {
 
@@ -31,7 +29,8 @@ func main() {
 	dsns += "root:password@/slave01;"
 	dsns += "root:password@/slave02"
 
-	db, err := rep.Open("mysql", dsns)
+	var err error
+	db, err = rep.Open("mysql", dsns)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -41,47 +40,67 @@ func main() {
 	}
 
 	defer db.Close()
-
-	r := mux.NewRouter()
-	r.HandleFunc("/cars", ListCars)
-	http.Handle("/", r)
+	/*
+		err = db.Exec(`INSERT INTO cars (car_id, model,number, year, mileage, date, color)
+					VALUES (1, 'dd', '333','1999', '44444','43/64', 'red'), (2, 'backy', '345245','2000', '10000','21/10', 'green');`)
+		if err != nil {
+			log.Fatal(err)
+		}
+	*/
+	router := mux.NewRouter()
+	router.HandleFunc("/cars/{id}", GetCar).Methods("GET")
+	router.HandleFunc("/cars", ListCars).Methods("GET")
+	router.HandleFunc("/cars/{id}", DeleteCar).Methods("DELETE")
+	router.HandleFunc("/cars", CreateCar).Methods("POST")
+	router.HandleFunc("/cars/{id}", UpdateCar).Methods("PUT")
+	http.Handle("/", router)
 
 	fmt.Println("Server is listening...")
-	http.ListenAndServe(":8080", r)
-
+	http.ListenAndServe(":8281", router)
 	/*
 		err = db.Exec(`CREATE TABLE IF NOT EXISTS cars(
-			car_id      integer,
-			model		varchar(32),
-			number		varchar(32),
-			year		varchar(32),
-			mileage		varchar(32),
-			date		varchar(32),
-			color		varchar(32));`)
+				car_id      integer,
+				model		varchar(32),
+				number		varchar(32),
+				year		varchar(32),
+				mileage		varchar(32),
+				date		varchar(32),
+				color		varchar(32));`)
 		if err != nil {
 			log.Fatal(err)
 		}
 		err = db.Exec(`INSERT INTO cars (car_id, model,number, year, mileage, date, color)
-		VALUES (1, 'dd', '333','1999', '44444','43/64', 'red'), (2, 'backy', '345245','2000', '10000','21/10', 'green');`)
+			VALUES (1, 'dd', '333','1999', '44444','43/64', 'red'), (2, 'backy', '345245','2000', '10000','21/10', 'green');`)
 		if err != nil {
 			log.Fatal(err)
-		}
-
-		var car Car
-		results, err := db.Query("SELECT model FROM cars")
-		if err != nil {
-			log.Fatal(err)
-		}
-		for results.Next() {
-			results.Scan(&car.Model)
-			log.Printf(car.Model)
 		}
 	*/
+
+}
+
+func GetCar(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id := vars["id"]
+
+	result, err := db.Query("select * from cars where car_id = ?", id)
+	if err != nil {
+		log.Println(err)
+	}
+	defer result.Close()
+	car := Car{}
+	result.Next()
+	err = result.Scan(&car.ID, &car.Model, &car.Number, &car.Year, &car.Mileage, &car.InspectionDate, &car.Color)
+	if err != nil {
+		respondError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	respondJSON(w, http.StatusOK, car)
 }
 
 func ListCars(w http.ResponseWriter, r *http.Request) {
 
-	rows, err := db.Query("select model,number, year, mileage, date, color from cars")
+	rows, err := db.Query("select * from cars")
 	if err != nil {
 		log.Println(err)
 	}
@@ -89,18 +108,13 @@ func ListCars(w http.ResponseWriter, r *http.Request) {
 	cars := []Car{}
 
 	for rows.Next() {
-		p := Car{}
-		err := rows.Scan(&p.Model, &p.Number, &p.Year, &p.Mileage, &p.InspectionDate, &p.Color)
+		car := Car{}
+		err := rows.Scan(&car.ID, &car.Model, &car.Number, &car.Year, &car.Mileage, &car.InspectionDate, &car.Color)
 		if err != nil {
-			fmt.Println(err)
-			continue
+			respondError(w, http.StatusInternalServerError, err.Error())
+			return
 		}
-		cars = append(cars, p)
-	}
-
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
-		return
+		cars = append(cars, car)
 	}
 	respondJSON(w, http.StatusOK, cars)
 }
@@ -109,102 +123,49 @@ func DeleteCar(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	id := vars["id"]
 
-	_, err := db.Exec("delete from cars_db.cars where id = ?", id)
-	if err != nil {
-		log.Println(err)
+	if err := db.Exec("delete from cars where car_id = ?", id); err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
 	}
 
-	http.Redirect(w, r, "/", 301)
+	respondJSON(w, http.StatusNoContent, nil)
 }
 
-func GetCar(w http.ResponseWriter, r *http.Request) {
-	params := mux.Vars(r)
-	id, err := strconv.Atoi(params["id"])
-	if err != nil {
+func UpdateCar(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id := vars["id"]
+
+	var car Car
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(&car); err != nil {
 		respondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	defer r.Body.Close()
 
-	row, err := db.Query("select * from cars where id = ?", id)
-	car := Car{}
-	err = row.Scan(&car.Model, &car.Number, &car.Year, &car.Mileage, &car.InspectionDate, &car.Color)
-	if err != nil {
-		respondError(w, http.StatusNotFound, err.Error())
+	if err := db.Exec("UPDATE cars SET car_id=?, model=?,number=?, year=?, mileage=?, date=?, color=? WHERE car_id=?)",
+		car.ID, car.Model, car.Number, car.Year, car.Mileage, car.InspectionDate, car.Color, id); err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-
 	respondJSON(w, http.StatusOK, car)
-
-}
-
-func EditCar(w http.ResponseWriter, r *http.Request) {
-	err := r.ParseForm()
-	if err != nil {
-		log.Println(err)
-	}
-	//id := r.FormValue("id")
-	//model := r.FormValue("model")
-	//company := r.FormValue("company")
-	//price := r.FormValue("price")
-
-	//_, err = database.Exec("update productdb.Products set model=?, company=?, price = ? where id = ?",
-	//	model, company, price, id)
-
-	if err != nil {
-		log.Println(err)
-	}
-	http.Redirect(w, r, "/", 301)
 }
 
 func CreateCar(w http.ResponseWriter, r *http.Request) {
-	if r.Method == "POST" {
-
-		err := r.ParseForm()
-		if err != nil {
-			log.Println(err)
-		}
-		//model := r.FormValue("model")
-		//company := r.FormValue("company")
-		//price := r.FormValue("price")
-
-		//_, err = database.Exec("insert into productdb.Products (model, company, price) values (?, ?, ?)",
-		//	model, company, price)
-
-		if err != nil {
-			log.Println(err)
-		}
-		http.Redirect(w, r, "/", 301)
-	} else {
-		http.ServeFile(w, r, "templates/create.html")
+	var car Car
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(&car); err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
 	}
-}
+	defer r.Body.Close()
 
-func Insert(car *Car) {
-
-	stmt, err := db.Prepare(`INSERT INTO cars(
-			model,
-			number,			
-			year,		
-			mileage,		
-			date,		
-			color) VALUES(?, ?, ?, ?, ?, ?)`)
-	if err != nil {
-		panic(err)
+	if err := db.Exec("INSERT INTO cars (car_id, model,number, year, mileage, date, color) VALUES (?,?,?,?,?,?,?)",
+		car.ID, car.Model, car.Number, car.Year, car.Mileage, car.InspectionDate, car.Color); err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
 	}
-	defer stmt.Close()
-
-	_, err = stmt.Exec(
-		&car.Model,
-		&car.Number,
-		&car.Year,
-		&car.Mileage,
-		&car.InspectionDate,
-		&car.Color)
-	if err != nil {
-		panic(err)
-	}
-	log.Println("insert successful")
-
+	respondJSON(w, http.StatusCreated, car)
 }
 
 func respondJSON(w http.ResponseWriter, status int, payload interface{}) {
